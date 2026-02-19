@@ -35,7 +35,7 @@ Route::middleware(['auth:api', 'role:cashier'])->prefix('cashier')->group(functi
     Route::delete('cart-items/{cartItem}', [CartItemController::class, 'destroy']); // remove item
 
     // CHECKOUT
-    Route::post('carts/{cart}/checkout', [CartController::class, 'checkout']);
+    Route::post('carts/{cart}/checkout', [SaleController::class, 'store']);
 
     // PAYMENTS
     Route::post('payments', [PaymentController::class, 'store']);

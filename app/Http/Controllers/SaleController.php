@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Cart;
 use App\Models\Sale;
 use App\Models\SaleDetail;
+use App\Models\ProductSize;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -17,6 +18,7 @@ class SaleController extends Controller
     {
         $data = Sale::with([
             'details.product',
+            'details.size', // include size
             'payment',
             'user'
         ])->orderByDesc('sale_id')->get();
@@ -31,6 +33,7 @@ class SaleController extends Controller
     {
         $data = Sale::with([
             'details.product',
+            'details.size',
             'payment',
             'user'
         ])->where('sale_id', $id)->firstOrFail();
@@ -42,17 +45,14 @@ class SaleController extends Controller
      * POST /sales
      * Create sale from cart
      */
-    public function store(Request $request)
+    public function store($cartId)
     {
-        $request->validate([
-            'cart_id' => 'required|exists:carts,cart_id'
-        ]);
-
-        $cart = Cart::with('items.product')
-            ->where('cart_id', $request->cart_id)
+        $cart = Cart::with(['items.product', 'items.size'])
+            ->where('cart_id', $cartId)
             ->where('status', 'open')
             ->firstOrFail();
 
+            
         if ($cart->items->isEmpty()) {
             return response()->json([
                 'message' => 'Cart is empty'
@@ -62,12 +62,8 @@ class SaleController extends Controller
         DB::beginTransaction();
 
         try {
-            // calculate total
-            $total = $cart->items->sum(function ($item) {
-                return $item->subtotal;
-            });
+            $total = $cart->items->sum('subtotal');
 
-            // create sale (INVOICE)
             $sale = Sale::create([
                 'cart_id'      => $cart->cart_id,
                 'user_id'      => $cart->user_id,
@@ -76,30 +72,41 @@ class SaleController extends Controller
                 'sale_date'    => now(),
             ]);
 
-            // create sale details
             foreach ($cart->items as $item) {
+
+                // 🔥 Lock row to prevent overselling
+                $productSize = ProductSize::where([
+                        'product_id' => $item->product_id,
+                        'size_id'    => $item->size_id
+                    ])
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if ($productSize->stock_qty < $item->quantity) {
+                    DB::rollBack();
+                    return response()->json([
+                        'message' => "Not enough stock for {$item->product->product_name} (Size: {$item->size->name})"
+                    ], 400);
+                }
 
                 SaleDetail::create([
                     'sale_id'    => $sale->sale_id,
                     'product_id' => $item->product_id,
+                    'size_id'    => $item->size_id,
                     'quantity'   => $item->quantity,
                     'price'      => $item->price,
                     'subtotal'   => $item->subtotal,
                 ]);
 
-                // update product stock
-                $item->product->decrement('stock_qty', $item->quantity);
+                $productSize->decrement('stock_qty', $item->quantity);
             }
 
-            // close cart
-            $cart->update([
-                'status' => 'checked_out'
-            ]);
+            $cart->update(['status' => 'checked_out']);
 
             DB::commit();
 
             return response()->json(
-                $sale->load('details.product'),
+                $sale->load(['details.product', 'details.size', 'user']),
                 201
             );
 
@@ -113,6 +120,7 @@ class SaleController extends Controller
         }
     }
 
+
     /**
      * DELETE /sales/{id}
      */
@@ -120,7 +128,6 @@ class SaleController extends Controller
     {
         $sale = Sale::with('details', 'payment')->findOrFail($id);
 
-        // ❌ do not allow delete paid sale
         if ($sale->status === 'paid') {
             return response()->json([
                 'message' => 'Cannot delete a paid sale'
@@ -128,10 +135,15 @@ class SaleController extends Controller
         }
 
         DB::transaction(function () use ($sale) {
-
-            // restore stock (optional but recommended)
+            // restore stock per product size
             foreach ($sale->details as $detail) {
-                $detail->product->increment('stock_qty', $detail->quantity);
+                $productSize = ProductSize::where('product_id', $detail->product_id)
+                    ->where('size_id', $detail->size_id)
+                    ->first();
+
+                if ($productSize) {
+                    $productSize->increment('stock_qty', $detail->quantity);
+                }
             }
 
             $sale->details()->delete();

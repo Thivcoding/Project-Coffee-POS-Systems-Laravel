@@ -14,6 +14,7 @@ class SaleDetail extends Model
     protected $fillable = [
         'sale_id',
         'product_id',
+        'size_id',    
         'quantity',
         'price',
         'subtotal'
@@ -21,11 +22,16 @@ class SaleDetail extends Model
 
     public function sale()
     {
-        return $this->belongsTo(Sale::class, 'sale_id');
+        return $this->belongsTo(Sale::class, 'sale_id', 'sale_id');
     }
 
     public function product()
     {
-        return $this->belongsTo(Product::class, 'product_id');
+        return $this->belongsTo(Product::class, 'product_id', 'product_id');
+    }
+
+    public function size()
+    {
+        return $this->belongsTo(Size::class, 'size_id', 'id');
     }
 }
