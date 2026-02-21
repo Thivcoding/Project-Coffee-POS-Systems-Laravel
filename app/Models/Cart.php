@@ -16,6 +16,8 @@ class Cart extends Model
         'status'
     ];
 
+    protected $appends = ['total'];
+
     public function user()
     {
         return $this->belongsTo(User::class, 'user_id');
@@ -23,11 +25,20 @@ class Cart extends Model
 
     public function items()
     {
-        return $this->hasMany(CartItem::class, 'cart_id');
+        return $this->hasMany(CartItem::class, 'cart_id', 'cart_id');
     }
 
     public function sale()
     {
-        return $this->hasOne(Sale::class, 'cart_id');
+        return $this->hasOne(Sale::class, 'cart_id', 'cart_id');
+    }
+
+    public function getTotalAttribute()
+    {
+        if ($this->relationLoaded('items')) {
+            return $this->items->sum('subtotal');
+        }
+
+        return $this->items()->sum('subtotal');
     }
 }

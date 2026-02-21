@@ -25,6 +25,10 @@ Route::post('/login', [AuthController::class, 'login']);
 // CASHIER ROUTES
 // ----------------------
 Route::middleware(['auth:api', 'role:cashier'])->prefix('cashier')->group(function () {
+
+    // PRODUCT MANAGEMENT
+    Route::apiResource('products', ProductController::class)->only('index');
+
     // CART & CART ITEMS
     Route::get('carts', [CartController::class, 'index']); // view carts
     Route::post('carts', [CartController::class, 'store']); // create cart

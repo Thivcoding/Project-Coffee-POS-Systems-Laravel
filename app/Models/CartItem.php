@@ -7,8 +7,10 @@ use Illuminate\Database\Eloquent\Model;
 
 class CartItem extends Model
 {
+    use HasFactory;
+
     protected $primaryKey = 'cart_item_id';
-    
+
     protected $fillable = [
         'cart_id',
         'product_id',
@@ -20,25 +22,16 @@ class CartItem extends Model
 
     public function cart()
     {
-        return $this->belongsTo(Cart::class, 'cart_id');
+        return $this->belongsTo(Cart::class, 'cart_id', 'cart_id');
     }
 
     public function product()
     {
-        return $this->belongsTo(Product::class, 'product_id');
+        return $this->belongsTo(Product::class, 'product_id', 'product_id');
     }
 
     public function size()
     {
-        return $this->belongsTo(Size::class, 'size_id');
-    }
-
-    // 🔥 THIS IS REQUIRED because you use items.productSize
-    public function productSize()
-    {
-        return $this->belongsTo(ProductSize::class, 
-            ['product_id', 'size_id'], 
-            ['product_id', 'size_id']
-        );
+        return $this->belongsTo(Size::class, 'size_id', 'id');
     }
 }
