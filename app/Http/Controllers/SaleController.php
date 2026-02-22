@@ -16,14 +16,19 @@ class SaleController extends Controller
      */
     public function index()
     {
-        $data = Sale::with([
+        $query = Sale::with([
             'details.product',
-            'details.size', // include size
+            'details.size',
             'payment',
             'user'
-        ])->orderByDesc('sale_id')->get();
+        ])->orderByDesc('sale_id');
 
-        return response()->json($data);
+        // ✅ NEW FEATURE: Cashier only sees their own sales
+        if (auth()->user()->role === 'cashier') {
+            $query->where('user_id', auth()->id());
+        }
+
+        return response()->json($query->get());
     }
 
     /**
@@ -31,12 +36,19 @@ class SaleController extends Controller
      */
     public function show($id)
     {
-        $data = Sale::with([
+        $query = Sale::with([
             'details.product',
             'details.size',
             'payment',
             'user'
-        ])->where('sale_id', $id)->firstOrFail();
+        ])->where('sale_id', $id);
+
+        // ✅ NEW FEATURE: Prevent cashier from viewing other cashier sales
+        if (auth()->user()->role === 'cashier') {
+            $query->where('user_id', auth()->id());
+        }
+
+        $data = $query->firstOrFail();
 
         return response()->json($data);
     }
@@ -52,7 +64,6 @@ class SaleController extends Controller
             ->where('status', 'open')
             ->firstOrFail();
 
-            
         if ($cart->items->isEmpty()) {
             return response()->json([
                 'message' => 'Cart is empty'
@@ -66,7 +77,7 @@ class SaleController extends Controller
 
             $sale = Sale::create([
                 'cart_id'      => $cart->cart_id,
-                'user_id'      => $cart->user_id,
+                'user_id'      => auth()->id(), // ✅ Ensure sale belongs to logged in user
                 'total_amount' => $total,
                 'status'       => 'pending',
                 'sale_date'    => now(),
@@ -74,7 +85,6 @@ class SaleController extends Controller
 
             foreach ($cart->items as $item) {
 
-                // 🔥 Lock row to prevent overselling
                 $productSize = ProductSize::where([
                         'product_id' => $item->product_id,
                         'size_id'    => $item->size_id
@@ -120,13 +130,20 @@ class SaleController extends Controller
         }
     }
 
-
     /**
      * DELETE /sales/{id}
      */
     public function destroy($id)
     {
-        $sale = Sale::with('details', 'payment')->findOrFail($id);
+        $query = Sale::with('details', 'payment')
+            ->where('sale_id', $id);
+
+        // ✅ NEW FEATURE: Cashier can only delete their own sales
+        if (auth()->user()->role === 'cashier') {
+            $query->where('user_id', auth()->id());
+        }
+
+        $sale = $query->firstOrFail();
 
         if ($sale->status === 'paid') {
             return response()->json([
@@ -135,7 +152,7 @@ class SaleController extends Controller
         }
 
         DB::transaction(function () use ($sale) {
-            // restore stock per product size
+
             foreach ($sale->details as $detail) {
                 $productSize = ProductSize::where('product_id', $detail->product_id)
                     ->where('size_id', $detail->size_id)

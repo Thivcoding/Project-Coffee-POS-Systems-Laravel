@@ -48,6 +48,7 @@ Route::middleware(['auth:api', 'role:cashier'])->prefix('cashier')->group(functi
 
     // VIEW SALES (optional)
     Route::get('sales', [SaleController::class, 'index']); // cashier can view own sales
+    Route::get('sales/{id}', [SaleController::class, 'show']); // cashier can view own sales
 });
 
 // ----------------------
