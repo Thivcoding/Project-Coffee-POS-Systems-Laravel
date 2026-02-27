@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Payment;
 use App\Models\Sale;
+use App\Services\TelegramService;
 use Exception;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,7 +18,7 @@ class PaymentController extends Controller
     /**
      * Create payment (cash / bakong)
      */
-    public function store(Request $request)
+    public function store(Request $request, TelegramService $telegram)
     {
         $request->validate([
             'sale_id' => 'required|exists:sales,sale_id',
@@ -25,9 +26,8 @@ class PaymentController extends Controller
             'paid_amount' => 'nullable|numeric|min:0'
         ]);
 
-        $sale = Sale::findOrFail($request->sale_id);
+        $sale = Sale::with('user')->findOrFail($request->sale_id);
 
-        // Sale already paid
         if ($sale->status === 'paid') {
             return response()->json([
                 'message' => 'Sale already paid'
@@ -37,13 +37,9 @@ class PaymentController extends Controller
         DB::beginTransaction();
 
         try {
-            // ===================== CASH PAYMENT =====================
             if ($request->method === 'cash') {
-
                 if ($request->paid_amount < $sale->total_amount) {
-                    return response()->json([
-                        'message' => 'Paid amount is not enough'
-                    ], 400);
+                    return response()->json(['message'=>'Paid amount is not enough'],400);
                 }
 
                 $payment = Payment::create([
@@ -56,10 +52,24 @@ class PaymentController extends Controller
                     'currency'      => 'USD'
                 ]);
 
-                // update sale
                 $sale->update(['status' => 'paid']);
-
                 DB::commit();
+
+                // ================= SEND TELEGRAM FOR CASH =================
+                $customerName = $sale->user->username ?? 'Walk-in Customer';
+
+                $message = "🧾 *VANTHIV POS*\n";
+                $message .= "━━━━━━━━━━━━━━━\n";
+                $message .= "*Sale ID:* `{$sale->sale_id}`\n";
+                $message .= "*Cashier:* {$customerName}\n";
+                $message .= "*Total:* `{$payment->amount} USD`\n";
+                $message .= "*Method:* {$payment->method}\n";
+                $message .= "*Date:* " . now()->format('Y-m-d H:i') . "\n";
+                $message .= "━━━━━━━━━━━━━━━\n";
+                $message .= "✅ *Status: PAID*";
+
+                // send message
+                $telegram->sendMessage($message);
 
                 return response()->json([
                     'message' => 'Cash payment success',
@@ -67,9 +77,7 @@ class PaymentController extends Controller
                 ], 201);
             }
 
-            // ===================== BAKONG PAYMENT =====================
             if ($request->method === 'bakong') {
-
                 $payment = Payment::create([
                     'sale_id' => $sale->sale_id,
                     'method'  => 'bakong',
@@ -78,20 +86,19 @@ class PaymentController extends Controller
                     'currency'=> 'KHR'
                 ]);
 
-                // Generate KHQR
-                $merchant = new IndividualInfo(
+                $merchant = new \KHQR\Models\IndividualInfo(
                     bakongAccountID: env('BAKONG_ACCOUNT'),
                     merchantName: 'VANTHIV POS',
                     merchantCity: 'Phnom Penh',
-                    currency: KHQRData::CURRENCY_KHR,
+                    currency: \KHQR\Helpers\KHQRData::CURRENCY_KHR,
                     amount: $payment->amount
                 );
 
-                $bakong = new BakongKHQR(env('BAKONG_TOKEN'));
+                $bakong = new \KHQR\BakongKHQR(env('BAKONG_TOKEN'));
                 $qrResponse = $bakong->generateIndividual($merchant);
 
                 if (!isset($qrResponse->data['qr'])) {
-                    throw new Exception('Cannot generate KHQR');
+                    throw new \Exception('Cannot generate KHQR');
                 }
 
                 $payment->update([
@@ -101,6 +108,22 @@ class PaymentController extends Controller
 
                 DB::commit();
 
+                // ================= SEND TELEGRAM FOR BAKONG =================
+                $cashier = $sale->user->username ?? 'Unknown';
+
+                $message = "🧾 *VANTHIV POS*\n";
+                $message .= "━━━━━━━━━━━━━━━\n";
+                $message .= "*Sale ID:* `{$sale->sale_id}`\n";
+                $message .= "*Cashier:* {$cashier}\n";
+                $message .= "*Total:* `{$payment->amount} KHR`\n";
+                $message .= "*Payment:* BAKONG\n";
+                $message .= "*Date:* " . now()->format('Y-m-d H:i') . "\n";
+                $message .= "━━━━━━━━━━━━━━━\n";
+                $message .= "📲 *Scan QR To Pay*\n";
+                $message .= "🕒 *Status:* Pending";
+
+                $telegram->sendMessage($message);
+
                 return response()->json([
                     'message' => 'Bakong QR generated',
                     'payment' => $payment,
@@ -108,7 +131,7 @@ class PaymentController extends Controller
                 ], 201);
             }
 
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
             DB::rollBack();
             return response()->json([
                 'message' => $e->getMessage()
@@ -119,7 +142,7 @@ class PaymentController extends Controller
     /**
      * Check Bakong payment status
      */
-    public function checkBakong(Payment $payment)
+    public function checkBakong(Payment $payment, TelegramService $telegram)
     {
         if ($payment->method !== 'bakong') {
             return response()->json([
@@ -132,12 +155,33 @@ class PaymentController extends Controller
             $result = $bakong->checkTransactionByMD5($payment->bakong_txn_id);
 
             if (($result['responseCode'] ?? 1) === 0) {
-                $payment->update([
-                    'status'      => 'paid',
-                    'paid_amount' => $payment->amount
-                ]);
 
-                $payment->sale->update(['status' => 'paid']);
+                // Prevent duplicate notification
+                if ($payment->status !== 'paid') {
+
+                    $payment->update([
+                        'status'      => 'paid',
+                        'paid_amount' => $payment->amount
+                    ]);
+
+                    $payment->sale->update(['status' => 'paid']);
+
+                    $sale = $payment->sale()->with('user')->first();
+                    $cashier = $sale->user->username ?? 'Unknown';
+
+                    // ================= SEND TELEGRAM =================
+                    $message = "🧾 *VANTHIV POS*\n";
+                    $message .= "━━━━━━━━━━━━━━━\n";
+                    $message .= "*Sale ID:* `{$sale->sale_id}`\n";
+                    $message .= "*Cashier:* {$cashier}\n";
+                    $message .= "*Total:* `{$payment->amount} KHR`\n";
+                    $message .= "*Payment:* BAKONG\n";
+                    $message .= "*Date:* " . now()->format('Y-m-d H:i') . "\n";
+                    $message .= "━━━━━━━━━━━━━━━\n";
+                    $message .= "✅ *Status: PAID* 🎉";
+
+                    $telegram->sendMessage($message);
+                }
             }
 
             return response()->json([
