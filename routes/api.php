@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Route;
 Route::post('/register', [AuthController::class, 'register']); // optional for cashier
 Route::post('/login', [AuthController::class, 'login']);
 
+Route::apiResource('products', ProductController::class)->only('index');
 // ----------------------
 // CASHIER ROUTES
 // ----------------------
